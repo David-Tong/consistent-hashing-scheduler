@@ -1,17 +1,17 @@
-package interview.aliyun.scheduler;
+package io.ytong.chs;
 
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.SortedMap;
-import java.util.TreeMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
-import interview.aliyun.scheduler.entity.Server;
-import interview.aliyun.scheduler.entity.Task;
-import interview.aliyun.scheduler.entity.TaskType;
-import interview.aliyun.scheduler.helper.HashUtilHelper;
-import interview.aliyun.scheduler.helper.PropertyHelper;
+import io.ytong.chs.entity.Server;
+import io.ytong.chs.entity.Task;
+import io.ytong.chs.entity.TaskType;
+import io.ytong.chs.helper.HashUtilHelper;
+import io.ytong.chs.helper.PropertyHelper;
 
 public class Scheduler {
 	private static final int VIRTUAL_NODE_NUM = 10;
@@ -28,7 +28,7 @@ public class Scheduler {
 	private double maxAssignedLoad;
 	private int bound_load_threshold;
 	private Map<String, Map<String, Server>> servers;
-	private Map<String, SortedMap<Integer, String>> hashRings = new HashMap<String, SortedMap<Integer,String>>();
+	private Map<String, SortedMap<Integer, String>> hashRings = new ConcurrentHashMap<String, SortedMap<Integer,String>>();
 
 	private String getVirtualNodeName(String ip, int num) {
 		return ip + "&&VN" + String.valueOf(num);
@@ -44,13 +44,13 @@ public class Scheduler {
 		this.bound_load_threshold = (int) (this.serverSum / TaskType.values().length * BOUND_LOAD_THRESHOLD_FACTOR);
 	}
 	
-	synchronized private void updateHashRings() {
+	private void updateHashRings() {
 		// clean up all hash rings
 		this.hashRings.clear();
 		
 		// update general and task specific hash ring
 		for (String keyName: this.servers.keySet()) {
-			SortedMap<Integer, String> hashRing = new TreeMap<Integer, String>();
+			SortedMap<Integer, String> hashRing = new ConcurrentSkipListMap<Integer, String>();
 			for (Server server : this.servers.get(keyName).values()) {
 				for (int i=0; i<VIRTUAL_NODE_NUM; i++) {
 					String virtualNodeName = getVirtualNodeName(server.getIp(), i);
@@ -70,14 +70,14 @@ public class Scheduler {
 		this.BOUND_LOAD_THRESHOLD_FACTOR = this.propertyHelper.getBoundLoadThresholdFactor();
 		
 		// define servers and hash rings
-		this.servers = new HashMap<String, Map<String, Server>>();
-		this.hashRings = new HashMap<String, SortedMap<Integer, String>>();
+		this.servers = new ConcurrentHashMap<String, Map<String, Server>>();
+		this.hashRings = new ConcurrentHashMap<String, SortedMap<Integer, String>>();
 				
 		// initialize general servers and hash ring
 		this.loadSum = 0;
 		this.serverSum = 0;
-		Map<String, Server> generalServers = new HashMap<String, Server>();
-		SortedMap<Integer, String> generalRing = new TreeMap<Integer, String>();
+		Map<String, Server> generalServers = new ConcurrentHashMap<String, Server>();
+		SortedMap<Integer, String> generalRing = new ConcurrentSkipListMap<Integer, String>();
 		for (Server server: servers) {
 			this.serverSum++;
 			generalServers.put(server.getIp(), server);
@@ -93,8 +93,8 @@ public class Scheduler {
 		
 		// initialize task specific servers and hash rings
 		for (TaskType type : TaskType.values()) {
-			this.servers.put(type.toString(), new HashMap<String, Server>());
-			this.hashRings.put(type.toString(), new TreeMap<Integer, String>());
+			this.servers.put(type.toString(), new ConcurrentHashMap<String, Server>());
+			this.hashRings.put(type.toString(), new ConcurrentSkipListMap<Integer, String>());
         }
 	}
 	
@@ -112,8 +112,8 @@ public class Scheduler {
 		
 		boolean skipTaskRing = true;
 		
-		rwl.readLock().lock();
 		try {
+			//rwl.readLock().lock();
 			if (!taskRing.isEmpty()) {	
 				SortedMap<Integer, String> subRing = taskRing.tailMap(hashVal);
 				if (subRing == null || subRing.isEmpty()) {
@@ -125,10 +125,13 @@ public class Scheduler {
 				serverIp = getServerName(virtualNode);
 				server = this.servers.get(task.getType().toString()).get(serverIp);
 				
-				// using bounded load consistent hashing algorithm
+				// when selected server with load larger than max assigned load, need find another server with less load
 				if (server.getLoad() > this.maxAssignedLoad) {	
 					Map<String, Server> taskServers = this.servers.get(task.getType().toString());
+					// specific task servers size is larger than bound load threshold, assign task with existing specific task servers
+					// don't assign to new server in the general ring, don't increase capacity for a specific type of task
 					if (taskServers.size() > bound_load_threshold) {
+						// has server with load less than max assigned load, do task ring
 						for (Server taskServer : taskServers.values()) {
 							if (taskServer.getLoad() < this.maxAssignedLoad) {
 								skipTaskRing = false;
@@ -151,16 +154,18 @@ public class Scheduler {
 						}
 					}
 				} else {
+					// find server, will not use general ring to select server
 					skipTaskRing = false;
 				}
 			} 
 		} finally {
-			rwl.readLock().unlock();
+			//rwl.readLock().unlock();
 		}
 		
+		// when task ring is empty or decide to skip task ring, use general ring to select a server
 		if (taskRing.isEmpty() || skipTaskRing) {
-			rwl.readLock().lock();
 			try {
+				//rwl.readLock().lock();
 				SortedMap<Integer, String> generalRing = this.hashRings.get(GENERAL_RING_NAME);
 				SortedMap<Integer, String> subRing = generalRing.tailMap(hashVal);
 				if (subRing == null || subRing.isEmpty()) {
@@ -188,12 +193,12 @@ public class Scheduler {
 					} while (server.getLoad() > this.maxAssignedLoad);
 				}
 			} finally {
-				rwl.readLock().unlock();
+				//rwl.readLock().unlock();
 			}
-			// update task specific ring by schedule result
 			
-			rwl.writeLock().lock();
+			// update task specific ring by schedule result
 			try {
+				//rwl.writeLock().lock();
 				this.servers.get(task.getType().toString()).put(server.getIp(), server);
 				for (int i=0; i<VIRTUAL_NODE_NUM; i++) {
 					String virtualNodeName = getVirtualNodeName(serverIp, i);
@@ -202,7 +207,7 @@ public class Scheduler {
 					taskRing.put(hashVal, virtualNodeName);	
 				}
 			} finally {
-				rwl.writeLock().unlock();
+				//rwl.writeLock().unlock();
 			}
 		} 
 		

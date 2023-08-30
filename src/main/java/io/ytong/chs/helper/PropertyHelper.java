@@ -1,11 +1,11 @@
-package interview.aliyun.scheduler.helper;
+package io.ytong.chs.helper;
 
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Properties;
 
-import interview.aliyun.scheduler.entity.TaskType;
+import io.ytong.chs.entity.TaskType;
 
 
 public class PropertyHelper {

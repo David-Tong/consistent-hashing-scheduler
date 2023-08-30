@@ -1,10 +1,10 @@
-package interview.aliyun.scheduler;
+package io.ytong.chs;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import interview.aliyun.scheduler.entity.Task;
-import interview.aliyun.scheduler.helper.TaskHelper;
+import io.ytong.chs.entity.Task;
+import io.ytong.chs.helper.TaskHelper;
 
 public class TaskRunner implements Runnable {	
 	private int taskNum;
@@ -27,10 +27,10 @@ public class TaskRunner implements Runnable {
 			int count = 0;
 	    	long startTime = System.currentTimeMillis();
 	    	long endTime = System.currentTimeMillis();
-	    	for (int i=0; i<runTimes; i++) {
+	    	for (int i = 0; i < runTimes; i++) {
 		    	for (Task task : tasks) {
 		    		count++;
-		    		if (count % 10000 == 0) {
+		    		if (count % 100 == 0) {
 		    			endTime = System.currentTimeMillis();
 		    			System.out.printf("[THREAD] %s [RUN TIME] %s for [COUNT] %s \n", 
 		    					Thread.currentThread().getName(), (endTime - startTime) + "ms", count);
@@ -39,7 +39,9 @@ public class TaskRunner implements Runnable {
 		    		this.scheduler.scheduleTask(task);
 		    	}
 		    	if (i < runTimes) {
-		    		TimeUnit.SECONDS.sleep(this.sleepDuration);
+		    		System.out.printf("[THREAD] %s sleep for next batch. \n", 
+	    					Thread.currentThread().getName(), (endTime - startTime) + "ms", count);
+		    		TimeUnit.SECONDS.sleep(sleepDuration);
 		    	}
 	    	}
 		} catch (InterruptedException e) {

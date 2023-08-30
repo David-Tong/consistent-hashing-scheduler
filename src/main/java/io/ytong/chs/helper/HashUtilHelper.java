@@ -1,4 +1,4 @@
-package interview.aliyun.scheduler.helper;
+package io.ytong.chs.helper;
 
 public class HashUtilHelper {
 	public static int getHashVal(String str) {

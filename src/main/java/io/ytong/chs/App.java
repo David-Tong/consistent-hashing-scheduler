@@ -1,4 +1,4 @@
-package interview.aliyun.scheduler;
+package io.ytong.chs;
 
 import java.io.IOException;
 //import java.text.DecimalFormat;
@@ -7,10 +7,10 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
-import interview.aliyun.scheduler.entity.Server;
-import interview.aliyun.scheduler.helper.PropertyHelper;
-import interview.aliyun.scheduler.helper.ServerHelper;
-import interview.aliyun.scheduler.helper.TaskHelper;
+import io.ytong.chs.entity.Server;
+import io.ytong.chs.helper.PropertyHelper;
+import io.ytong.chs.helper.ServerHelper;
+import io.ytong.chs.helper.TaskHelper;
 
 public class App {
 	
@@ -39,25 +39,14 @@ public class App {
     	long startTime = System.currentTimeMillis();
     	
     	// schedule
-    	ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(10);
+    	ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newFixedThreadPool(300);
     	
-    	// run task runner at the interval of 5s, 100000 tasks in a batch, 2 runners, run for twice
-    	for (int i=0; i<2; i++) {
-    		TaskRunner taskRunner = new TaskRunner(100000, 5, 2, scheduler, taskHelper);
+    	// run task runner at the interval of 5s, 1000 tasks in a batch, 200 runners, run for twice
+    	for (int i = 0; i < 200; i++) {
+    		TaskRunner taskRunner = new TaskRunner(1000, 1, 5, scheduler, taskHelper);
     		executor.submit(taskRunner);
     	}
     	
-    	// run task runner at the interval of 10s, 100000 tasks in a batch, 2 runners, run for twice
-    	for (int i=0; i<2; i++) {
-    		TaskRunner taskRunner = new TaskRunner(100000, 10, 2, scheduler, taskHelper);
-    		executor.submit(taskRunner);
-    	}
-    	
-    	// run task runner at the interval of 60s, 100000 tasks in a batch, 2 runners, run for once
-    	for (int i=0; i<2; i++) {
-    		TaskRunner taskRunner = new TaskRunner(100000, 60, 1, scheduler, taskHelper);
-    		executor.submit(taskRunner);
-    	}
     	try {
     		executor.shutdown();
 			executor.awaitTermination(Long.MAX_VALUE, TimeUnit.MINUTES);
@@ -69,16 +58,5 @@ public class App {
     	long endTime = System.currentTimeMillis();
     	System.out.printf("[THREAD] %s program takes %s to run \n", 
 				Thread.currentThread().getName(), (endTime - startTime) + "ms");
-    	
-    	// print result
-    	/*long loadSum = 0;
-    	for (Server server : servers) {
-    		loadSum += server.getLoad();
-    	}
-    	
-    	DecimalFormat df = new DecimalFormat("0.0000");
-    	for (Server server : servers) {
-    		System.out.printf("[SERVER] %s takes %s load with %s percentage \n", server.getIp(), server.getLoad(), df.format((float)server.getLoad() / loadSum));
-    	}*/
     }
 }

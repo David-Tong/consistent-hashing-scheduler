@@ -1,4 +1,4 @@
-package interview.aliyun.scheduler.entity;
+package io.ytong.chs.entity;
 
 public class Task {	
 	private String id;

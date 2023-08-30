@@ -1,4 +1,4 @@
-package interview.aliyun.scheduler.helper;
+package io.ytong.chs.helper;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -6,7 +6,7 @@ import java.util.List;
 import java.util.Random;
 import java.util.Set;
 
-import interview.aliyun.scheduler.entity.Server;
+import io.ytong.chs.entity.Server;
 
 public class ServerHelper {
 	private PropertyHelper propertyHelper;

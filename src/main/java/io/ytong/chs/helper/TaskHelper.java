@@ -1,11 +1,11 @@
-package interview.aliyun.scheduler.helper;
+package io.ytong.chs.helper;
 
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
 
-import interview.aliyun.scheduler.entity.Task;
-import interview.aliyun.scheduler.entity.TaskType;
+import io.ytong.chs.entity.Task;
+import io.ytong.chs.entity.TaskType;
 
 public class TaskHelper {
 	private Random random = new Random();
