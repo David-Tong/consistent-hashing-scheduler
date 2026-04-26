@@ -6,7 +6,8 @@
 - Thread-safe, low-latency
 - Even load distribution considering task weight (1–10)
 - Dynamic node add/remove with minimal task remapping
-- Task affinity: same task type → same machine when topology unchanged
+- Soft task affinity (not strict binding)
+- High resource utilization without partitioning
 
 ## Architecture Overview
 
@@ -24,13 +25,13 @@
 +----------+-------------+
            |
            v
-+------------------------+
-| Task Router Service    |
-|                        |
-| - Consistent Hash Ring |
-| - Weighted Scheduling  |
-| - Task Affinity Cache  |
-+----------+-------------+
++-------------------------------+
+| Task Router Service           |
+|                               |
+| - HRW Preference Engine       |
+| - Candidate Expander          |
+| - Load-Aware Selector         |
++----------+--------------------+
            |
            v
 +------------------------+
@@ -48,36 +49,110 @@
 +------------------------+
 ```
 
+# Core Design Principles
+
+## 1. Two-Phase Scheduling Model
+
+The system separates scheduling into two distinct phases:
+
+### Phase 1: Deterministic Preference (HRW)
+
+For each task type T and node Mi, compute:
+
+```
+score(T, Mi) = hash(T, Mi)
+```
+
+Sort all nodes by score (descending):
+
+```
+RankedNodes(T) = [M7, M23, M4, ...]
+```
+
+This produces a deterministic preference order.
+
+This approach ensures:
+
+- All schedulers agree on the same ordering
+- Minimal disruption when nodes change
+- No need for hash rings or virtual nodes
+
+### Phase 2: Load-Aware Placement
+
+- From preferred nodes, select based on real-time load:
+
+```
+projectedLoad = (currentLoad + taskWeight) / capacity
+```
+
+- Choose node with lowest projected load.
+
+Ensures:
+
+- Fair distribution
+- Avoids hotspots
+- Maximizes utilization
+
+## 2. Soft Task Affinity
+
+- Tasks of the same type share the same HRW ranking
+- No fixed binding to a single node
+
+Result:
+
+- Strong locality when load is low
+- Automatic spreading when load increases
+
+## 3. Progressive Candidate Expansion
+
+Instead of selecting a single node:
+
+```
+Top K → if no capacity → Top 2K → Top 3K → ...
+```
+
+Benefits:
+
+- Prevents overload
+- Adapts to workload skew
+- Maintains affinity when possible
+
+## 4. Global Shared Resource Pool
+
+- All nodes belong to a single pool:
+
+```
+Nodes = {M1, M2, ..., MN}
+```
+
+- No per-type partitioning
+  Avoids fragmentation and improves utilization
+
 # Key Design Decisions
 
-## Consistent Hashing with Virtual Nodes
+## HRW (Rendezvous Hashing)
 
-- Each physical machine maps to multiple virtual nodes
-- Supports:
-  - Smooth load balancing
-  - Minimal migration when nodes change
+- Each node gets a score per task type
+- Highest score = highest preference
+- Next highest = fallback
 
-- Virtual node count can be capacity-based
+Properties:
 
-## Weighted Task Scheduling
+- Uniform distribution across nodes
+- Minimal remapping on node changes
+- Simple and stateless (no ring, no tokens)
 
-- Each task has a weight (1–10)
-- Node capacity tracked as:
+## Load-Aware Scheduling
 
-```
-currentLoad + taskWeight <= nodeCapacity
-```
+- Capacity-aware admission control
+- Weight-based scheduling (task weight 1–10)
+- Prevents node overload
 
-## Task Affinity (Sticky Tasks)
+## Adaptive Scheduling
 
-- Same task type → same hash key
-- Hash key example:
-
-```
-hash(taskType)
-```
-
-- Ensures consistency if ring unchanged
+- Candidate set expands dynamically
+- No fixed allocation per task type
+- Handles skew automatically
 
 # Component Diagram
 
@@ -85,227 +160,146 @@ hash(taskType)
 +--------------------------------------------------+
 |                  TaskRouter                      |
 |--------------------------------------------------|
-| + route(Task) : Node                             |
-| + rebalance()                                   |
+| + route(Task) : WorkerNode                      |
 |--------------------------------------------------|
-|  Uses:                                           |
-|   - ConsistentHashRing                           |
-|   - LoadBalancer                                 |
-|   - AffinityManager                              |
+| Uses:                                           |
+|  - HRWPreferenceEngine                          |
+|  - CandidateSelector                            |
+|  - LoadEvaluator                                |
 +------------------------+-------------------------+
                          |
          +---------------+---------------+
          |                               |
-+---------------------+        +--------------------+
-| ConsistentHashRing  |        | LoadBalancer       |
-|---------------------|        |--------------------|
-| + addNode()         |        | + selectNode()     |
-| + removeNode()      |        | + updateLoad()     |
-| + getNode(key)      |        +--------------------+
-+---------------------+
++--------------------------+   +----------------------+
+| HRWPreferenceEngine      |   | LoadEvaluator        |
+|--------------------------|   |----------------------|
+| + rank(taskType)         |   | + canAccept()        |
+|                          |   | + projectedLoad()   |
++--------------------------+   +----------------------+
          |
-+---------------------+
-| AffinityManager     |
-|---------------------|
-| + getPreferredNode()|
-| + cacheMapping()    |
-+---------------------+
++--------------------------+
+| CandidateSelector        |
+|--------------------------|
+| + expand(K)              |
++--------------------------+
 ```
 
 # Core Components & Responsibilities
 
 ## TaskRouter (Core Entry Point)
 
-- Responsibility
-  - Main orchestration layer
-  - Maps incoming tasks to worker nodes
+Responsibility
 
-- Key Logic
-  - Try task affinity
-  - Fallback to consistent hashing
-  - Validate node capacity
+- Orchestrates scheduling decision
+
+Logic
 
 ```
-public interface TaskRouter {
-    WorkerNode route(Task task);
+route(task):
+  ranked = HRW.rank(task.type)
+
+  for window in [K, 2K, 3K...]:
+      candidates = ranked[0:window]
+
+      feasible = filter(nodes with capacity)
+
+      if feasible not empty:
+          return node with min(projectedLoad)
+
+  return fallback
+```
+
+## HRWPreferenceEngine
+
+```
+public interface HRWPreferenceEngine {
+    List<WorkerNode> rank(String taskType);
 }
 ```
 
-## ConsistentHashRing
+- Stateless
+- Deterministic
+- No caching required
 
-- Responsibility
-  - Maintain sorted hash ring
-  - Minimal remapping when topology changes
-
-- Design
-  - TreeMap<Long, VirtualNode>
-  - Thread-safe with ReadWriteLock
+## CandidateSelector
 
 ```
-public interface ConsistentHashRing {
-    void addNode(WorkerNode node);
-    void removeNode(String nodeId);
-    WorkerNode getNode(String hashKey);
+public interface CandidateSelector {
+    List<WorkerNode> expand(List<WorkerNode> ranked, int k);
 }
 ```
 
-## VirtualNode
+- Controls progressive expansion
+- Ensures adaptive scheduling
+
+## LoadEvaluator
 
 ```
-public class VirtualNode {
-    private final String virtualId;
-    private final WorkerNode physicalNode;
+public interface LoadEvaluator {
+    boolean canAccept(WorkerNode node, int weight);
+    double projectedLoad(WorkerNode node, int weight);
 }
 ```
-
-- Number of virtual nodes ∝ machine capacity
-
-## LoadBalancer (Weight-Aware)
-
-- Responsibility
-  - Ensure node capacity not exceeded
-  - Balance weighted tasks
-
-```
-public interface LoadBalancer {
-    boolean canAccept(WorkerNode node, int taskWeight);
-    void onTaskAssigned(WorkerNode node, int taskWeight);
-    void onTaskFinished(WorkerNode node, int taskWeight);
-}
-```
-
-- Implementation Notes
-  - Use AtomicInteger for current load
-  - Avoid global locks
-
-## AffinityManager
-
-- Responsibility
-  - Preserve task-type → node mapping
-  - Improves cache locality and predictability
-
-```
-public interface AffinityManager {
-    Optional<WorkerNode> getPreferredNode(String taskType);
-    void bind(String taskType, WorkerNode node);
-}
-```
-
-- Storage Options
-  - Local ConcurrentHashMap
-  - Optional Redis for multi-router consistency
 
 ## WorkerNode
 
 ```
-
 public class WorkerNode {
     private final String nodeId;
-    private final int capacity; // total weight allowed
+    private final int capacity;
     private final AtomicInteger currentLoad;
-}
-```
-
-# API Design (Java-Friendly)
-
-## Task Ingress API
-
-```
-
-public interface TaskIngressApi {
-    void submit(Task task);
-}
-```
-
-```
-
-public class Task {
-    private String taskId;
-    private String taskType;
-    private int weight; // 1-10
-}
-```
-
-## Node Management API
-
-```
-
-public interface NodeRegistry {
-    void registerNode(WorkerNode node);
-    void deregisterNode(String nodeId);
-    List<WorkerNode> listNodes();
 }
 ```
 
 # Concurrency & Thread Safety Strategy
 
-The system is designed for **high-concurrency, read-heavy workloads**. Its concurrency model follows the principle of **lock-free or lightweight locks on the read path, and centralized control on the write path**.
-
-## Concurrency Strategy Overview
-
-| Component            | Strategy                    | Rationale                                                           |
-| -------------------- | --------------------------- | ------------------------------------------------------------------- |
-| Consistent Hash Ring | `ReadWriteLock`             | Node lookup is frequent (reads), topology changes are rare (writes) |
-| Node Load Tracking   | `AtomicInteger`             | Lock-free, accurate tracking of current load                        |
-| Task Routing         | Lock-free / CAS-based       | Avoids blocking on the hot routing path                             |
-| Node Add/Remove      | Write lock + lazy rebalance | Limits the impact of topology changes                               |
-
-## Key Design Considerations
-
-- **ConsistentHashRing**
-  - Uses `ReentrantReadWriteLock`
-  - Read lock for node lookup operations (high concurrency, low latency)
-  - Write lock only when adding or removing nodes (low frequency)
-
-- **WorkerNode Load Tracking**
-  - `AtomicInteger` is used to maintain `currentLoad`
-  - Task assignment and completion update load via atomic operations
-  - Eliminates lock contention under high concurrency
-
-- **Task Routing Path**
-  - Primarily stateless and read-only
-  - Combines consistent hashing with local task-affinity caching
-  - Avoids synchronized blocks in the routing hot path
-
-- **Node Topology Changes**
-  - Node addition and removal are considered control-plane operations
-  - Protected by write locks on the hash ring
-  - Only tasks in affected hash ranges are remapped (lazy rebalancing)
-
-## Resulting Benefits
-
-- Supports extremely high concurrency
-- Avoids global locks and bottlenecks
-- Minimizes performance impact during topology changes
-- Aligns with production-grade Java concurrency best practices
+| Component     | Strategy               | Description                                                                                         |
+| ------------- | ---------------------- | --------------------------------------------------------------------------------------------------- |
+| HRW ranking   | Stateless / lock-free  | Deterministic computation with no shared mutable state                                              |
+| Load tracking | AtomicInteger          | Uses atomic operations for thread-safe counters without locks :contentReference[oaicite:0]{index=0} |
+| Task routing  | Lock-free              | Avoids blocking in the hot path for high throughput                                                 |
+| Node updates  | Copy-on-write snapshot | Immutable snapshots ensure safe concurrent reads                                                    |
 
 # Dynamic Scaling & Minimal Migration
 
-- Adding a Node
-  - Create virtual nodes
-  - Insert into hash ring
-  - Only tasks in affected hash ranges migrate
+## Node Add
 
-- Removing a Node
-  - Remove virtual nodes from the ring
-  - Re-route tasks mapped to removed ranges only
-  - Ensures O(k / n) migration instead of full reshuffle
+- Automatically participates in ranking
+- Only affects tasks where it ranks highly
 
-# Extensibility
+## Node Remove
 
-- Pluggable hash functions
-- Alternative load metrics (CPU, memory, custom)
-- Multi-cluster and region-aware routing
-- Failure detection and retry mechanisms
+- Tasks fall back to next-ranked node
+- No global reshuffle required
+
+HRW guarantees minimal disruption and smooth failover
+
+# Key Properties Summary
+
+| Property                 | Result |
+| ------------------------ | ------ |
+| Shared resource pool     | ✅ Yes |
+| Soft type affinity       | ✅ Yes |
+| Load-aware scheduling    | ✅ Yes |
+| No resource partitioning | ✅ Yes |
+| Handles workload skew    | ✅ Yes |
+| Minimal disruption       | ✅ Yes |
+| High utilization         | ✅ Yes |
 
 # Summary
 
-This design:
+This design transforms task scheduling into a two-phase decision system:
 
-- Supports thousands of worker nodes
-- Handles high concurrency safely
-- Achieves balanced load distribution
-- Preserves task affinity
-- Minimizes task migration
-- Is cleanly implementable in Java
-- Suitable for production systems and system-design interviews
+## 1. Deterministic preference (HRW)
+
+- Stable, consistent, minimal disruption
+
+## 2. Dynamic load-aware selection
+
+- Adaptive, fair, and efficient
+
+By separating determinism from adaptability, the system achieves:
+
+- Better scalability than static hashing
+- Better stability than purely dynamic scheduling
+- Simpler implementation than hash-ring-based designs
