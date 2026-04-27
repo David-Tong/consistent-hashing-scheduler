@@ -260,19 +260,31 @@ public class WorkerNode {
 | Task routing  | Lock-free              | Avoids blocking in the hot path for high throughput                                                 |
 | Node updates  | Copy-on-write snapshot | Immutable snapshots ensure safe concurrent reads                                                    |
 
-# Dynamic Scaling & Minimal Migration
+# Task Redistribution under Node Changes
 
-## Node Add
+In the two-phase scheduling model:
 
-- Automatically participates in ranking
-- Only affects tasks where it ranks highly
+- Phase 1 (HRW) only defines a deterministic preference ordering
+- Phase 2 (load-aware placement) determines the final assignment
 
-## Node Remove
+## Node Addition
 
-- Tasks fall back to next-ranked node
-- No global reshuffle required
+- Does not trigger global redistribution
+- Only affects tasks where the new node ranks within the candidate set
+- Even then, reassignment happens only if it provides a better load score
+- In practice, only a small subset of future scheduling decisions are impacted
 
-HRW guarantees minimal disruption and smooth failover
+# Node Removal
+
+- Only tasks currently assigned to the removed node must be rescheduled
+- Reassignment is not strictly to the next HRW node, but to the lowest projected-load node within the candidate set
+- No global reshuffle occurs
+
+This design ensures:
+
+- Minimal disruption
+- Load-aware stability
+- Preservation of task locality whenever possible
 
 # Key Properties Summary
 
